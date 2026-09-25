@@ -1,96 +1,146 @@
 # llm-from-scratch
 
-A minimal, readable, end-to-end implementation of a decoder-only Transformer
-language model (GPT-style), trained the way real pre-training pipelines work:
+A GPT-style, decoder-only Transformer language model — **tokenizer, architecture, training loop, and text generation, all built from scratch** in plain PyTorch and NumPy. No Hugging Face, no pre-built transformer libraries. Every matrix multiplication in the attention mechanism, every line of the BPE tokenizer, and every step of the training loop is written out and readable.
 
 ```
-raw text -> BPE tokenizer -> binary token shards -> Transformer -> pretraining loop -> sampling/generation
+raw text  →  byte-level BPE tokenizer  →  binary token shards  →  Transformer  →  pretraining loop  →  sampling / generation
 ```
 
-Nothing here is a wrapper around someone else's library. The tokenizer, the
-attention mechanism, the training loop, and the sampler are all implemented
-from scratch in plain PyTorch + NumPy, so you can read every line and know
-exactly what it does. It's small enough to train a real (if tiny) model on a
-laptop CPU in a few minutes, and structured so that swapping in a bigger
-config (`configs/gpt_small.yaml`) and a real GPU gets you a genuine
-124M-parameter GPT-2-shaped model.
+This project exists to answer one question properly: **what actually happens between typing a prompt and a language model generating text?** Every design decision below is deliberate and explained, not just copied from a tutorial.
+
+---
+
+## Features
+
+| Component | What's implemented |
+|---|---|
+| **Tokenizer** | Byte-level Byte-Pair Encoding (BPE), trained from scratch — no `<unk>` fallback needed, since every byte is representable |
+| **Attention** | Causal multi-head self-attention from raw matmuls, with optional **Grouped-Query** / **Multi-Query Attention** |
+| **Positional encoding** | Learned absolute embeddings *or* **RoPE** (Rotary Position Embeddings) — configurable per run |
+| **Normalization** | LayerNorm *or* **RMSNorm** |
+| **Feedforward** | Standard GeLU MLP *or* **SwiGLU** (LLaMA-style gated activation) |
+| **Training** | AdamW with correct weight-decay exclusions, cosine LR schedule with linear warmup, gradient clipping, mixed precision (AMP) |
+| **Inference** | KV-cached autoregressive generation with temperature / top-k / top-p sampling |
+| **Checkpointing** | Self-describing checkpoints (architecture + weights + optimizer state bundled together) with resume support |
+| **Tests** | Causal-mask leakage tests, tensor-shape tests, tokenizer round-trip invertibility tests |
+
+---
+
+## Project structure
+
+```
+llm-from-scratch/
+├── data/
+│   ├── raw/corpus.txt            # your training text goes here
+│   └── processed/                # tokenized train.bin / val.bin (generated)
+├── configs/
+│   ├── gpt_nano.yaml             # ~3-10M params — fast CPU iteration
+│   ├── gpt_small.yaml            # 124M params, GPT-2-small-shaped — needs a GPU
+│   └── training_config.yaml      # annotated reference for every training hyperparameter
+├── src/
+│   ├── tokenizer/                # byte-level BPE: base.py, bpe.py
+│   ├── model/                    # embedding, attention, feedforward, norm, block, transformer
+│   ├── data/                     # dataset preparation + memory-mapped batching
+│   ├── training/                 # trainer, optimizer, LR scheduler
+│   ├── inference/                # generator, sampler, KV cache
+│   └── utils/                    # logging, checkpointing
+├── tests/                        # causal-mask, shape, and tokenizer tests
+├── notebooks/                    # interactive walkthroughs of each subsystem
+├── pretrain.py                   # entry point: train a model
+├── generate.py                   # entry point: generate text from a checkpoint
+└── requirements.txt
+```
+
+---
 
 ## Quickstart
 
 ```bash
+git clone https://github.com/<your-username>/llm-from-scratch.git
+cd llm-from-scratch
+
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-
-# 1. Put raw text in data/raw/corpus.txt (a sample is already there)
-
-# 2. Train a byte-level BPE tokenizer on it and tokenize the corpus into
-#    train.bin / val.bin
-python -m src.tokenizer.bpe --train --input data/raw/corpus.txt \
-    --vocab-size 512 --out src/tokenizer/vocab.json
-python -m src.data.dataset --prepare --input data/raw/corpus.txt \
-    --vocab src/tokenizer/vocab.json --out-dir data/processed
-
-# 3. Pretrain a tiny model
-python pretrain.py --config configs/gpt_nano.yaml
-
-# 4. Generate text from a checkpoint
-python generate.py --checkpoint checkpoints/step_5000.pt \
-    --vocab src/tokenizer/vocab.json --prompt "Once upon a time"
 ```
 
-## Layout
+**1. Train a tokenizer on your text**
+```bash
+python -m src.tokenizer.bpe --train --input data/raw/corpus.txt \
+    --vocab-size 2000 --out src/tokenizer/vocab.json
+```
 
-See the project tree below for what lives where; every subpackage under
-`src/` has a single, focused job:
+**2. Tokenize the corpus into training data**
+```bash
+python -m src.data.dataset --prepare --input data/raw/corpus.txt \
+    --vocab src/tokenizer/vocab.json --out-dir data/processed
+```
 
-- `src/tokenizer` — byte-level BPE, trained from scratch on your corpus.
-- `src/model` — the Transformer itself: embeddings, causal attention
-  (supports Grouped-Query Attention), SwiGLU/GeLU feedforward, RMSNorm or
-  LayerNorm, and the decoder block that wires them together with residuals.
-- `src/data` — turns raw text into memory-mapped token arrays and serves
-  fixed-length `(x, y)` context windows for next-token prediction.
-- `src/training` — the training loop itself: AdamW with weight-decay
-  exclusions, cosine LR schedule with linear warmup, gradient clipping, and
-  mixed precision.
-- `src/inference` — autoregressive generation with temperature / top-k /
-  top-p sampling and a KV cache for fast decoding.
-- `src/utils` — logging and checkpointing.
-- `tests/` — shape and causality tests that catch the two bugs that ruin
-  every from-scratch Transformer implementation: leaking future tokens
-  through the attention mask, and silently broken tensor shapes.
+**3. Make sure `vocab_size` in your config matches step 1's `--vocab-size` exactly**, then pretrain:
+```bash
+python pretrain.py --config configs/gpt_nano.yaml
+```
+
+**4. Generate text from a checkpoint**
+```bash
+python generate.py --checkpoint checkpoints/step_2000.pt \
+    --vocab src/tokenizer/vocab.json \
+    --prompt "Once upon a time" \
+    --temperature 0.8 --top-k 40
+```
+
+**Resuming an interrupted or extended run** (raise `max_steps` in your config first):
+```bash
+python pretrain.py --config configs/gpt_nano.yaml --resume checkpoints/step_2000.pt
+```
+
+---
 
 ## Design notes
 
-- **Tokenizer**: byte-level BPE (same idea as GPT-2's), so it never hits an
-  unknown token — every byte is representable — and the vocabulary is
-  learned entirely from your data rather than imported from elsewhere.
-- **Positional info**: `src/model/embedding.py` supports both learned
-  absolute positional embeddings (simplest, GPT-2 style) and RoPE (rotary
-  embeddings, used by most modern LLMs); pick one in the model config.
-- **Attention**: `src/model/attention.py` implements causal multi-head
-  attention from the underlying matrix multiplications (not
-  `nn.MultiheadAttention`), and generalizes to Grouped-Query Attention by
-  letting the number of key/value heads be smaller than the number of query
-  heads.
-- **Configs**: `configs/gpt_nano.yaml` (~10M params) is meant for fast
-  iteration and CPU sanity checks; `configs/gpt_small.yaml` is a
-  GPT-2-small-shaped 124M param config for when you have a GPU.
+**Tokenizer — byte-level BPE.** Operating on raw UTF-8 bytes (256 base tokens) rather than a fixed character/word vocabulary means the tokenizer can represent *any* input, including text and scripts it never saw during training, with no information loss. `decode(encode(text)) == text` always holds.
+
+**Positional encoding — learned vs. RoPE.** Learned embeddings (GPT-2 style) are simple but don't generalize past the trained context length. RoPE rotates query/key vectors by an angle proportional to position, baking relative-position information directly into the attention dot product — used by most modern LLMs (LLaMA, Mistral, etc.) for better length extrapolation.
+
+**Attention — MHA, GQA, and MQA.** `n_kv_heads == n_heads` gives standard multi-head attention. Setting `n_kv_heads < n_heads` shares key/value heads across multiple query heads (Grouped-Query Attention), shrinking the KV cache with minimal quality loss — the same trick used in production models to make long-context inference affordable.
+
+**Feedforward — GeLU vs. SwiGLU.** A plain two-layer GeLU MLP is the GPT-2 default. SwiGLU (LLaMA/PaLM/Mistral) gates one projection with SiLU before multiplying it into another, which empirically outperforms GeLU at matched parameter count.
+
+**Pre-norm residual stream.** Every block normalizes *before* the sublayer (`norm → attention/FFN → add residual`) rather than after. This keeps the residual stream numerically well-behaved through depth, which is what makes deep Transformers trainable without exotic initialization tricks.
+
+**Training recipe.** Linear warmup avoids unstable early updates while Adam's moment estimates are poorly calibrated; cosine decay afterward gives the best final loss for a fixed compute budget — the same schedule shape used by GPT-2/GPT-3 and nearly every LLM pretraining run since.
+
+---
 
 ## Tests
 
 ```bash
-pytest tests/
+pytest tests/ -v
 ```
 
-`test_causal_mask.py` verifies that no position can attend to a future
-position (by checking that changing a future token never changes the logits
-at earlier positions). `test_shapes.py` walks a batch through every module
-and checks tensor shapes at each stage. `test_tokenizer.py` checks that
-`decode(encode(text)) == text` for arbitrary Unicode input, including
-characters outside the training data (byte-level BPE guarantees this).
+- **`test_causal_mask.py`** — verifies that changing a future token can *never* change an earlier position's logits. This is the single most important property of an autoregressive model, and the easiest thing to silently break.
+- **`test_shapes.py`** — walks a batch through every module and pins down the exact expected tensor shape at each stage, including a check that cached, token-by-token decoding produces *identical* logits to a full forward pass.
+- **`test_tokenizer.py`** — checks encode/decode invertibility on ASCII, accented Latin, CJK, and emoji text, including strings never seen during training.
 
-## What this is not
+---
 
-This is an educational, single-machine implementation. It does not include
-distributed/multi-GPU training, FlashAttention kernels, or dataset
-deduplication/filtering pipelines — all of which matter enormously at real
-scale but would obscure the core ideas this repo is meant to teach.
+## Model sizes
+
+| Config | Params | Use case |
+|---|---|---|
+| `gpt_nano.yaml` | ~3–10M | Fast local iteration, CPU-friendly, sanity checks |
+| `gpt_small.yaml` | ~124M | GPT-2-small-shaped; needs a GPU and a much larger corpus/vocab |
+
+Both share identical code — only the YAML config changes. Swapping `pos_encoding`, `norm_type`, or `activation` in either is a one-line change.
+
+---
+
+## What this is *not*
+
+An educational, single-machine implementation. It intentionally does not include distributed/multi-GPU training, fused/FlashAttention kernels, or dataset deduplication pipelines — all essential at real scale, but out of scope for what this repo is trying to teach.
+
+---
+
+## License
+
+[Choose a license — MIT is a common permissive default for educational ML projects.]
