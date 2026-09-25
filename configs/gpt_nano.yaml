@@ -1,0 +1,41 @@
+# gpt_nano: a tiny config for fast local iteration / CPU sanity checks.
+# Roughly 10M non-embedding parameters. Trains in minutes on a laptop CPU
+# on a small corpus like data/raw/corpus.txt.
+
+model:
+  vocab_size: 2000        # must match the vocab_size used to train the tokenizer
+  block_size: 128
+  d_model: 256
+  n_layers: 4
+  n_heads: 4
+  n_kv_heads: 4           # == n_heads -> plain multi-head attention
+  d_ff: 1024
+  pos_encoding: learned   # "learned" | "rope"
+  norm_type: layernorm    # "layernorm" | "rmsnorm"
+  activation: gelu        # "gelu" | "swiglu"
+  dropout: 0.1
+  attn_dropout: 0.1
+  bias: true
+  tie_embeddings: true
+
+training:
+  train_bin: data/processed/train.bin
+  val_bin: data/processed/val.bin
+  out_dir: checkpoints
+
+  batch_size: 32
+  grad_accum_steps: 1
+  max_steps: 2000
+  eval_interval: 100
+  eval_iters: 20
+  log_interval: 10
+  checkpoint_interval: 500
+
+  max_lr: 3.0e-4
+  min_lr: 3.0e-5
+  warmup_steps: 100
+  weight_decay: 0.1
+  grad_clip: 1.0
+
+  dtype: float32          # CPU-safe; use "bfloat16" on a supporting GPU
+  seed: 1337

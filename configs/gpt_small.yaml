@@ -1,0 +1,41 @@
+# gpt_small: a GPT-2-small-shaped 124M parameter config.
+# Needs a GPU with mixed precision to train at any reasonable speed; expects
+# a much larger tokenizer vocabulary and corpus than gpt_nano.
+
+model:
+  vocab_size: 50257       # GPT-2-style vocab size; retrain the tokenizer at this size
+  block_size: 1024
+  d_model: 768
+  n_layers: 12
+  n_heads: 12
+  n_kv_heads: 12          # set < n_heads for GQA to shrink the KV cache
+  d_ff: 3072
+  pos_encoding: learned   # try "rope" for better length extrapolation
+  norm_type: layernorm
+  activation: gelu
+  dropout: 0.1
+  attn_dropout: 0.1
+  bias: true
+  tie_embeddings: true
+
+training:
+  train_bin: data/processed/train.bin
+  val_bin: data/processed/val.bin
+  out_dir: checkpoints
+
+  batch_size: 12
+  grad_accum_steps: 40    # effective batch size ~= 12 * 40 = 480 sequences
+  max_steps: 600000
+  eval_interval: 1000
+  eval_iters: 100
+  log_interval: 50
+  checkpoint_interval: 2000
+
+  max_lr: 6.0e-4
+  min_lr: 6.0e-5
+  warmup_steps: 2000
+  weight_decay: 0.1
+  grad_clip: 1.0
+
+  dtype: bfloat16
+  seed: 1337

@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Virtual environment
+.venv/
+venv/
+
+# Generated data / artifacts
+data/processed/*.bin
+src/tokenizer/vocab.json
+checkpoints/*.pt
+checkpoints/train_log.jsonl
+
+# Editor / OS
+.vscode/
+.DS_Store
+Thumbs.db
