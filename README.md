@@ -141,6 +141,3 @@ An educational, single-machine implementation. It intentionally does not include
 
 ---
 
-## License
-
-[Choose a license — MIT is a common permissive default for educational ML projects.]
